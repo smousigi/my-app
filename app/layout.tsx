@@ -13,9 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Northstar | Product operations for focused teams",
-  description:
-    "A polished MVP homepage for planning product launches, decisions, and customer signals.",
+  title: "Bike Check | Seattle commute planner",
+  description: "A private weather and construction check for deciding whether to bike to work.",
 };
 
 export default function RootLayout({

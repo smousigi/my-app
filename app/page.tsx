@@ -1,264 +1,399 @@
-import Image from "next/image";
+import RouteTabs, { type RoutePlan } from "@/app/route-tabs";
+import {
+  getCommuteData,
+  northgateStation,
+  workDestination,
+  type CommuteApiResponse as RawCommuteApiResponse,
+} from "@/lib/commute-data";
 
-const stats = [
-  { value: "2.8x", label: "faster launch cycles" },
-  { value: "42%", label: "less manual reporting" },
-  { value: "18k", label: "events tracked daily" },
-];
+export const dynamic = "force-dynamic";
 
-const features = [
+type OpenMeteoSeries = {
+  hourly?: {
+    time?: string[];
+    temperature_2m?: number[];
+    precipitation_probability?: number[];
+    precipitation?: number[];
+    rain?: number[];
+    showers?: number[];
+    weather_code?: number[];
+    wind_gusts_10m?: number[];
+  };
+};
+
+type NwsPeriod = {
+  startTime: string;
+  probabilityOfPrecipitation?: { value?: number | null };
+  shortForecast?: string;
+};
+
+type CommuteApiResponse = RawCommuteApiResponse & {
+  sources: RawCommuteApiResponse["sources"] & {
+    openMeteo?: OpenMeteoSeries[] | OpenMeteoSeries | null;
+    elevation?: { elevation?: number[] } | null;
+    nwsHourly?: { properties?: { periods?: NwsPeriod[] } } | null;
+    alerts?: { features?: { properties?: { event?: string; severity?: string; headline?: string } }[] } | null;
+  };
+};
+
+type RideWindow = {
+  label: string;
+  start: Date;
+  end: Date;
+};
+
+type WindowFinding = {
+  label: string;
+  status: "go" | "caution" | "no";
+  summary: string;
+  details: string[];
+};
+
+type RideStats = {
+  lowTemp?: number;
+  maxPop?: number;
+  maxRain?: number;
+  maxGust?: number;
+};
+
+const routeDistanceMiles = 8.1;
+const routeMinutes = "35-50";
+const rainyCodes = new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99]);
+const routePlans: RoutePlan[] = [
   {
-    title: "Live planning",
+    id: "there",
+    label: "Ride to work",
+    origin: northgateStation,
+    destination: workDestination,
+    title: "Northgate to 2021 7th Ave",
     description:
-      "Turn product goals, customer signals, and release milestones into a plan your whole team can read.",
+      "Use Google bicycling directions as the live route source, favoring the Roosevelt and Eastlake bike corridor over Aurora.",
+    steps: [
+      "Leave Northgate Station and head south toward the Northgate bike network.",
+      "Work toward Roosevelt using calmer neighborhood streets and signed bike connections.",
+      "Continue south through the Roosevelt and University District corridor.",
+      "Use the Eastlake bike corridor toward South Lake Union.",
+      "Enter downtown/South Lake Union and finish on 7th Ave near 2021 7th Ave.",
+    ],
   },
   {
-    title: "Decision history",
+    id: "home",
+    label: "Ride home",
+    origin: workDestination,
+    destination: northgateStation,
+    title: "2021 7th Ave to Northgate",
     description:
-      "Capture why work changed, who approved it, and what evidence moved the roadmap.",
-  },
-  {
-    title: "Launch readiness",
-    description:
-      "See blockers, owners, dependencies, and success metrics before a release reaches customers.",
+      "Reverse the same lower-stress bike corridor, checking Google for one-way constraints, closures, and current detours.",
+    steps: [
+      "Leave 2021 7th Ave and work north out of South Lake Union.",
+      "Connect to the Eastlake bike corridor heading north.",
+      "Continue through the University District and Roosevelt corridor.",
+      "Use neighborhood bike connections toward Northgate.",
+      "Finish at Northgate Station and avoid high-speed arterials where Google offers calmer bike alternatives.",
+    ],
   },
 ];
 
-const activity = [
-  "Pricing experiment approved",
-  "Customer research synced",
-  "Release notes drafted",
-  "Support risks reviewed",
-];
+function timeToday(hours: number, minutes: number) {
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+}
 
-export default function Home() {
+function rideWindows(): RideWindow[] {
+  return [
+    { label: "Morning ride", start: timeToday(8, 0), end: timeToday(9, 30) },
+    { label: "Afternoon ride", start: timeToday(15, 30), end: timeToday(17, 0) },
+  ];
+}
+
+function formatTime(date: Date) {
+  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function weatherText(code?: number) {
+  if (code === undefined) return "Unknown";
+  if (code === 0) return "Clear";
+  if ([1, 2, 3].includes(code)) return "Cloudy";
+  if ([45, 48].includes(code)) return "Fog";
+  if (rainyCodes.has(code)) return "Rain";
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return "Snow";
+  return "Mixed";
+}
+
+function max(values: number[]) {
+  return values.length ? Math.max(...values) : undefined;
+}
+
+function min(values: number[]) {
+  return values.length ? Math.min(...values) : undefined;
+}
+
+function forecastSeries(data?: CommuteApiResponse) {
+  return Array.isArray(data?.sources.openMeteo)
+    ? data.sources.openMeteo
+    : data?.sources.openMeteo
+      ? [data.sources.openMeteo]
+      : [];
+}
+
+function collectWindowStats(
+  window: RideWindow,
+  data?: CommuteApiResponse,
+): RideStats & { rainyCode: boolean; nwsRainy: boolean; codes: number[]; nwsText?: string } {
+  const temps: number[] = [];
+  const rain: number[] = [];
+  const pops: number[] = [];
+  const gusts: number[] = [];
+  const codes: number[] = [];
+
+  for (const location of forecastSeries(data)) {
+    const times = location.hourly?.time ?? [];
+    times.forEach((time, index) => {
+      const stamp = new Date(time);
+      if (stamp >= window.start && stamp <= window.end) {
+        const temp = location.hourly?.temperature_2m?.[index];
+        const precipitation = location.hourly?.precipitation?.[index] ?? 0;
+        const rainAmount =
+          precipitation + (location.hourly?.rain?.[index] ?? 0) + (location.hourly?.showers?.[index] ?? 0);
+        const pop = location.hourly?.precipitation_probability?.[index];
+        const gust = location.hourly?.wind_gusts_10m?.[index];
+        const code = location.hourly?.weather_code?.[index];
+
+        if (typeof temp === "number") temps.push(temp);
+        if (typeof rainAmount === "number") rain.push(rainAmount);
+        if (typeof pop === "number") pops.push(pop);
+        if (typeof gust === "number") gusts.push(gust);
+        if (typeof code === "number") codes.push(code);
+      }
+    });
+  }
+
+  const nwsPeriods = data?.sources.nwsHourly?.properties?.periods ?? [];
+  const nwsMatches = nwsPeriods.filter((period) => {
+    const start = new Date(period.startTime);
+    return start >= window.start && start <= window.end;
+  });
+  const nwsPop = max(
+    nwsMatches
+      .map((period) => period.probabilityOfPrecipitation?.value)
+      .filter((value): value is number => typeof value === "number"),
+  );
+
+  return {
+    lowTemp: min(temps),
+    maxPop: max([...pops, ...(typeof nwsPop === "number" ? [nwsPop] : [])]),
+    maxRain: max(rain),
+    maxGust: max(gusts),
+    rainyCode: codes.some((code) => rainyCodes.has(code)),
+    nwsRainy: nwsMatches.some((period) => /rain|showers|thunder/i.test(period.shortForecast ?? "")),
+    codes,
+    nwsText: nwsMatches[0]?.shortForecast,
+  };
+}
+
+function analyzeWindow(window: RideWindow, data?: CommuteApiResponse): WindowFinding {
+  const stats = collectWindowStats(window, data);
+  const details: string[] = [];
+  const isRainy = (stats.maxRain ?? 0) > 0.005 || (stats.maxPop ?? 0) >= 35 || stats.rainyCode || stats.nwsRainy;
+
+  if (typeof stats.lowTemp === "number") details.push(`Lowest temp: ${Math.round(stats.lowTemp)} F`);
+  if (typeof stats.maxPop === "number") details.push(`Peak rain chance: ${Math.round(stats.maxPop)}%`);
+  if (typeof stats.maxRain === "number") details.push(`Hourly precip: ${stats.maxRain.toFixed(3)} in`);
+  if (typeof stats.maxGust === "number") details.push(`Max gust: ${Math.round(stats.maxGust)} mph`);
+  if (stats.codes.length) details.push(`Open-Meteo: ${weatherText(stats.codes.find((code) => rainyCodes.has(code)) ?? stats.codes[0])}`);
+  if (stats.nwsText) details.push(`NWS: ${stats.nwsText}`);
+
+  if (isRainy) {
+    return {
+      label: window.label,
+      status: "no",
+      summary: `Rain risk between ${formatTime(window.start)} and ${formatTime(window.end)}`,
+      details,
+    };
+  }
+
+  if (typeof stats.lowTemp === "number" && stats.lowTemp < 50) {
+    return {
+      label: window.label,
+      status: "no",
+      summary: `Below your 50 F threshold between ${formatTime(window.start)} and ${formatTime(window.end)}`,
+      details,
+    };
+  }
+
+  if ((stats.maxGust ?? 0) >= 25 || (stats.maxPop ?? 0) >= 25) {
+    return {
+      label: window.label,
+      status: "caution",
+      summary: "Rideable, but the forecast is close enough to keep watching",
+      details,
+    };
+  }
+
+  return {
+    label: window.label,
+    status: "go",
+    summary: `Looks rideable between ${formatTime(window.start)} and ${formatTime(window.end)}`,
+    details,
+  };
+}
+
+function combinedStats(windows: RideWindow[], data?: CommuteApiResponse): RideStats {
+  const stats = windows.map((window) => collectWindowStats(window, data));
+  return {
+    lowTemp: min(stats.map((item) => item.lowTemp).filter((value): value is number => typeof value === "number")),
+    maxPop: max(stats.map((item) => item.maxPop).filter((value): value is number => typeof value === "number")),
+    maxRain: max(stats.map((item) => item.maxRain).filter((value): value is number => typeof value === "number")),
+    maxGust: max(stats.map((item) => item.maxGust).filter((value): value is number => typeof value === "number")),
+  };
+}
+
+export default async function Home() {
+  const forecast = (await getCommuteData(northgateStation, workDestination)) as CommuteApiResponse;
+  const windows = rideWindows();
+  const findings = windows.map((window) => analyzeWindow(window, forecast));
+  const overall = findings.some((finding) => finding.status === "no")
+    ? "no"
+    : findings.some((finding) => finding.status === "caution")
+      ? "caution"
+      : "go";
+  const stats = combinedStats(windows, forecast);
+  const elevations = forecast.sources.elevation?.elevation;
+  const elevationText =
+    elevations && elevations.length >= 3
+      ? `${Math.round(elevations[0] * 3.28084)} ft start, ${Math.round(elevations[1] * 3.28084)} ft midpoint, ${Math.round(elevations[2] * 3.28084)} ft finish`
+      : "Elevation unavailable";
+  const alerts = forecast.sources.alerts?.features ?? [];
+  const mapsKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY;
+  const statusTheme =
+    overall === "go"
+      ? {
+          shell: "border-[#82cfa9] bg-[#dff4e8]",
+          badge: "bg-[#12613d] text-white",
+          text: "text-[#12613d]",
+          label: "GOOD",
+          title: "Bike today",
+          summary: "The full 8:00-9:30 AM and 3:30-5:00 PM windows clear your rain and 50 F rules.",
+        }
+      : overall === "caution"
+        ? {
+            shell: "border-[#e6c56a] bg-[#fff0c7]",
+            badge: "bg-[#76510b] text-white",
+            text: "text-[#76510b]",
+            label: "TOSS UP",
+            title: "Bike with caution",
+            summary: "This is close: very light rain risk, near-threshold temperature, or wind means re-check before leaving.",
+          }
+        : {
+            shell: "border-[#ef9d90] bg-[#ffe1dc]",
+            badge: "bg-[#913425] text-white",
+            text: "text-[#913425]",
+            label: "NOT GOOD",
+            title: "Skip the bike",
+            summary: "At least one commute window has rain risk or temperature below 50 F.",
+          };
+
   return (
-    <main className="min-h-screen bg-[#f7f5ef] text-[#171717]">
-      <section className="relative overflow-hidden border-b border-black/10 bg-[#fcfbf7]">
-        <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-6 py-6 sm:px-8 lg:px-10">
-          <header className="flex items-center justify-between">
-            <a href="#" className="flex items-center gap-3" aria-label="Northstar home">
-              <span className="grid size-10 place-items-center rounded-lg bg-[#1f3d2b] text-lg font-semibold text-white">
-                N
-              </span>
-              <span className="text-base font-semibold">Northstar</span>
-            </a>
-            <nav className="hidden items-center gap-8 text-sm font-medium text-black/65 md:flex">
-              <a href="#features" className="transition hover:text-black">
-                Features
-              </a>
-              <a href="#workflow" className="transition hover:text-black">
-                Workflow
-              </a>
-              <a href="#results" className="transition hover:text-black">
-                Results
-              </a>
-            </nav>
+    <main className="min-h-screen bg-[#edf3f0] px-4 py-5 text-[#16201b] sm:px-6 lg:px-8">
+      <section className="mx-auto grid max-w-7xl gap-5">
+        <div className={`rounded-lg border p-5 shadow-xl shadow-black/10 sm:p-6 ${statusTheme.shell}`}>
+          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
+            <div>
+              <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${statusTheme.text}`}>
+                Today&apos;s bike recommendation
+              </p>
+              <h1 className="mt-2 text-4xl font-semibold leading-tight sm:text-5xl">{statusTheme.title}</h1>
+              <p className="mt-3 max-w-3xl leading-7 text-[#435047]">{statusTheme.summary}</p>
+              <p className="mt-2 text-sm font-semibold text-[#53605a]">
+                Updated {formatTime(new Date(forecast.generatedAt))}
+              </p>
+            </div>
+            <span className={`inline-flex h-12 items-center justify-center rounded-md px-5 text-sm font-bold ${statusTheme.badge}`}>
+              {statusTheme.label}
+            </span>
+          </div>
+        </div>
+
+        <RouteTabs mapsKey={mapsKey} routePlans={routePlans} />
+
+        <div className="grid gap-5">
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <p className="text-sm font-semibold text-[#647069]">Route distance</p>
+              <p className="mt-2 text-3xl font-semibold">{routeDistanceMiles.toFixed(1)} mi</p>
+              <p className="mt-1 text-sm text-[#647069]">Bicycling estimate</p>
+            </div>
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <p className="text-sm font-semibold text-[#647069]">Ride time</p>
+              <p className="mt-2 text-3xl font-semibold">{routeMinutes}</p>
+              <p className="mt-1 text-sm text-[#647069]">minutes on RadCity 3</p>
+            </div>
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <p className="text-sm font-semibold text-[#647069]">Lowest temp</p>
+              <p className="mt-2 text-3xl font-semibold">
+                {typeof stats.lowTemp === "number" ? `${Math.round(stats.lowTemp)} F` : "--"}
+              </p>
+              <p className="mt-1 text-sm text-[#647069]">Across commute windows</p>
+            </div>
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <p className="text-sm font-semibold text-[#647069]">Rain chance</p>
+              <p className="mt-2 text-3xl font-semibold">
+                {typeof stats.maxPop === "number" ? `${Math.round(stats.maxPop)}%` : "--"}
+              </p>
+              <p className="mt-1 text-sm text-[#647069]">Peak forecast risk</p>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <p className="font-semibold">Elevation</p>
+              <p className="mt-2 text-sm leading-6 text-[#647069]">{elevationText}</p>
+            </div>
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <p className="font-semibold">Wind and alerts</p>
+              <p className="mt-2 text-sm leading-6 text-[#647069]">
+                {typeof stats.maxGust === "number" ? `Peak gust ${Math.round(stats.maxGust)} mph. ` : ""}
+                {alerts.length ? `${alerts.length} active NWS alert(s) near the route.` : "No active NWS alerts near the route."}
+              </p>
+            </div>
             <a
-              href="#demo"
-              className="rounded-full bg-[#171717] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#2f2f2f]"
+              href={forecast.sources.construction.url}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-lg border border-black/10 bg-white p-4 transition hover:bg-[#f8fbfa]"
             >
-              Book demo
+              <p className="font-semibold">Construction</p>
+              <p className="mt-2 text-sm leading-6 text-[#647069]">Open SDOT right-of-way projects before leaving.</p>
             </a>
-          </header>
+          </div>
 
-          <div className="grid flex-1 items-center gap-12 py-16 lg:grid-cols-[0.94fr_1.06fr] lg:py-10">
-            <div className="max-w-3xl">
-              <p className="mb-5 inline-flex rounded-full border border-[#d6cbb5] bg-white px-4 py-2 text-sm font-medium text-[#6f4d1f]">
-                Product operations for focused teams
-              </p>
-              <h1 className="max-w-4xl text-5xl font-semibold leading-[1.02] text-balance sm:text-6xl lg:text-7xl">
-                Keep every launch moving with one operating view.
-              </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-8 text-black/67 sm:text-xl">
-                Northstar gives product, design, and go-to-market teams a shared
-                workspace for planning decisions, launch checks, and customer
-                signals without another status meeting.
-              </p>
-              <div className="mt-9 flex flex-col gap-3 sm:flex-row">
-                <a
-                  href="#demo"
-                  className="inline-flex h-12 items-center justify-center rounded-full bg-[#1f3d2b] px-6 text-sm font-semibold text-white transition hover:bg-[#2a563a]"
-                >
-                  Start planning
-                </a>
-                <a
-                  href="#features"
-                  className="inline-flex h-12 items-center justify-center rounded-full border border-black/15 bg-white px-6 text-sm font-semibold text-black transition hover:border-black/30"
-                >
-                  Explore features
-                </a>
-              </div>
-            </div>
-
-            <div className="relative">
-              <div className="absolute -left-8 top-12 hidden h-44 w-44 rounded-full bg-[#e3b04b]/30 blur-3xl lg:block" />
-              <div className="relative rounded-[2rem] border border-black/10 bg-[#21251f] p-3 shadow-2xl shadow-black/20">
-                <div className="rounded-[1.55rem] bg-[#f7f5ef] p-4 sm:p-5">
-                  <div className="flex items-center justify-between gap-4 border-b border-black/10 pb-4">
-                    <div>
-                      <p className="text-sm font-semibold text-black/55">Q3 launch room</p>
-                      <h2 className="mt-1 text-xl font-semibold">Mobile checkout rollout</h2>
-                    </div>
-                    <div className="flex -space-x-2">
-                      {["JD", "MR", "AK"].map((name) => (
-                        <span
-                          key={name}
-                          className="grid size-9 place-items-center rounded-full border-2 border-[#f7f5ef] bg-[#d45b42] text-xs font-bold text-white"
-                        >
-                          {name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-4 py-5 sm:grid-cols-[1.15fr_0.85fr]">
-                    <div className="rounded-2xl border border-black/10 bg-white p-5">
-                      <div className="mb-5 flex items-center justify-between">
-                        <p className="text-sm font-semibold">Readiness</p>
-                        <span className="rounded-full bg-[#dff3df] px-3 py-1 text-xs font-semibold text-[#1f6b34]">
-                          On track
-                        </span>
-                      </div>
-                      <div className="space-y-4">
-                        {[
-                          ["Research", "100%"],
-                          ["Engineering", "78%"],
-                          ["Messaging", "64%"],
-                        ].map(([label, width]) => (
-                          <div key={label}>
-                            <div className="mb-2 flex justify-between text-sm">
-                              <span className="font-medium">{label}</span>
-                              <span className="text-black/50">{width}</span>
-                            </div>
-                            <div className="h-2 rounded-full bg-black/10">
-                              <div
-                                className="h-2 rounded-full bg-[#1f3d2b]"
-                                style={{ width }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-[#f0dfbd] p-5">
-                      <Image
-                        src="/globe.svg"
-                        alt=""
-                        width={34}
-                        height={34}
-                        className="mb-6 opacity-70"
-                      />
-                      <p className="text-sm font-semibold text-black/55">Customer signal</p>
-                      <p className="mt-2 text-2xl font-semibold leading-tight">
-                        312 beta users completed checkout in under 45 seconds.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-4 sm:grid-cols-4">
-                    {activity.map((item) => (
-                      <div key={item} className="rounded-2xl border border-black/10 bg-white p-4">
-                        <Image
-                          src="/window.svg"
-                          alt=""
-                          width={20}
-                          height={20}
-                          className="mb-5 opacity-55"
-                        />
-                        <p className="text-sm font-medium leading-5">{item}</p>
-                      </div>
-                    ))}
-                  </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {findings.map((finding) => (
+              <article key={finding.label} className="rounded-lg border border-black/10 bg-white p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-semibold">{finding.label}</h2>
+                  <span
+                    className={`rounded-md px-2 py-1 text-xs font-bold ${
+                      finding.status === "go"
+                        ? "bg-[#dff4e8] text-[#12613d]"
+                        : finding.status === "caution"
+                          ? "bg-[#fff0c7] text-[#76510b]"
+                          : "bg-[#ffe1dc] text-[#913425]"
+                    }`}
+                  >
+                    {finding.status === "go" ? "GO" : finding.status === "caution" ? "TOSS UP" : "NO"}
+                  </span>
                 </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="results" className="border-b border-black/10 bg-white px-6 py-14 sm:px-8">
-        <div className="mx-auto grid max-w-7xl gap-6 md:grid-cols-3">
-          {stats.map((stat) => (
-            <div key={stat.label} className="border-l border-black/10 pl-6">
-              <p className="text-4xl font-semibold text-[#d45b42]">{stat.value}</p>
-              <p className="mt-2 text-sm font-medium text-black/58">{stat.label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section id="features" className="bg-[#f7f5ef] px-6 py-20 sm:px-8">
-        <div className="mx-auto max-w-7xl">
-          <div className="max-w-2xl">
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#6f4d1f]">
-              Built for MVP speed
-            </p>
-            <h2 className="mt-4 text-4xl font-semibold leading-tight sm:text-5xl">
-              The structure your team needs before the process gets heavy.
-            </h2>
-          </div>
-          <div className="mt-12 grid gap-5 md:grid-cols-3">
-            {features.map((feature) => (
-              <article
-                key={feature.title}
-                className="rounded-2xl border border-black/10 bg-white p-6 shadow-sm"
-              >
-                <Image
-                  src="/file.svg"
-                  alt=""
-                  width={28}
-                  height={28}
-                  className="mb-10 opacity-60"
-                />
-                <h3 className="text-xl font-semibold">{feature.title}</h3>
-                <p className="mt-3 leading-7 text-black/62">{feature.description}</p>
+                <p className="mt-2 text-sm leading-6 text-[#53605a]">{finding.summary}</p>
+                <ul className="mt-3 space-y-1 text-sm text-[#647069]">
+                  {finding.details.map((detail) => (
+                    <li key={detail}>{detail}</li>
+                  ))}
+                </ul>
               </article>
             ))}
           </div>
-        </div>
-      </section>
-
-      <section id="workflow" className="bg-[#1f3d2b] px-6 py-20 text-white sm:px-8">
-        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.8fr_1.2fr]">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/55">
-              Workflow
-            </p>
-            <h2 className="mt-4 text-4xl font-semibold leading-tight sm:text-5xl">
-              Plan, decide, and launch from the same source of truth.
-            </h2>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-3">
-            {["Collect signals", "Rank work", "Ship confidently"].map((step, index) => (
-              <div key={step} className="rounded-2xl bg-white/10 p-6 ring-1 ring-white/15">
-                <span className="text-sm font-semibold text-[#f0dfbd]">
-                  0{index + 1}
-                </span>
-                <p className="mt-12 text-xl font-semibold">{step}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="demo" className="bg-[#fcfbf7] px-6 py-20 sm:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 border-t border-black/10 pt-12 md:flex-row md:items-center">
-          <div>
-            <h2 className="text-3xl font-semibold sm:text-4xl">Ready to shape the first release?</h2>
-            <p className="mt-3 max-w-xl leading-7 text-black/62">
-              Use this homepage as the front door for a focused MVP, then add
-              routes for auth, dashboard, and customer workflows as the product
-              becomes real.
-            </p>
-          </div>
-          <a
-            href="mailto:hello@example.com"
-            className="inline-flex h-12 items-center justify-center rounded-full bg-[#171717] px-6 text-sm font-semibold text-white transition hover:bg-[#2f2f2f]"
-          >
-            Contact sales
-          </a>
         </div>
       </section>
     </main>
