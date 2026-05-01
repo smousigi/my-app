@@ -17,6 +17,7 @@ type OpenMeteoSeries = {
     rain?: number[];
     showers?: number[];
     weather_code?: number[];
+    wind_speed_10m?: number[];
     wind_gusts_10m?: number[];
   };
 };
@@ -30,6 +31,7 @@ type NwsPeriod = {
 type CommuteApiResponse = RawCommuteApiResponse & {
   sources: RawCommuteApiResponse["sources"] & {
     openMeteo?: OpenMeteoSeries[] | OpenMeteoSeries | null;
+    airQuality?: { current?: { us_aqi?: number; pm2_5?: number } } | null;
     elevation?: { elevation?: number[] } | null;
     nwsHourly?: { properties?: { periods?: NwsPeriod[] } } | null;
     alerts?: { features?: { properties?: { event?: string; severity?: string; headline?: string } }[] } | null;
@@ -54,6 +56,15 @@ type RideStats = {
   maxPop?: number;
   maxRain?: number;
   maxGust?: number;
+};
+
+type CurrentConditions = {
+  condition: string;
+  precipitation?: number;
+  precipitationProbability?: number;
+  temperature?: number;
+  windGust?: number;
+  windSpeed?: number;
 };
 
 type DepartureCheck = {
@@ -185,6 +196,59 @@ function weatherText(code?: number) {
   if (rainyCodes.has(code)) return "Rain";
   if ([71, 73, 75, 77, 85, 86].includes(code)) return "Snow";
   return "Mixed";
+}
+
+function seattleDateParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    month: "2-digit",
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    hour: Number(get("hour")),
+  };
+}
+
+function currentConditions(data: CommuteApiResponse): CurrentConditions {
+  const series = forecastSeries(data)[1] ?? forecastSeries(data)[0];
+  const times = series?.hourly?.time ?? [];
+  const now = seattleDateParts(new Date(data.generatedAt));
+  const currentIndex = times.findIndex((time) => {
+    const [date, rawTime] = time.split("T");
+    const hour = Number(rawTime?.slice(0, 2));
+    return date === now.date && hour >= now.hour;
+  });
+  const index = currentIndex >= 0 ? currentIndex : 0;
+  const precipitation =
+    (series?.hourly?.precipitation?.[index] ?? 0) +
+    (series?.hourly?.rain?.[index] ?? 0) +
+    (series?.hourly?.showers?.[index] ?? 0);
+  const code = series?.hourly?.weather_code?.[index];
+
+  return {
+    condition: weatherText(code),
+    precipitation,
+    precipitationProbability: series?.hourly?.precipitation_probability?.[index],
+    temperature: series?.hourly?.temperature_2m?.[index],
+    windGust: series?.hourly?.wind_gusts_10m?.[index],
+    windSpeed: series?.hourly?.wind_speed_10m?.[index],
+  };
+}
+
+function airQualityText(aqi?: number) {
+  if (typeof aqi !== "number") return "Unavailable";
+  if (aqi <= 50) return "Good";
+  if (aqi <= 100) return "Moderate";
+  if (aqi <= 150) return "Sensitive";
+  if (aqi <= 200) return "Unhealthy";
+  if (aqi <= 300) return "Very unhealthy";
+  return "Hazardous";
 }
 
 function max(values: number[]) {
@@ -400,6 +464,8 @@ export default async function Home() {
   const statusTheme = indicatorStyles(overall);
   const construction = forecast.sources.construction;
   const routePlans = construction.recommendedCorridor === "alternate" ? alternateRoutePlans : defaultRoutePlans;
+  const current = currentConditions(forecast);
+  const currentAqi = forecast.sources.airQuality?.current?.us_aqi;
 
   return (
     <main className="min-h-screen bg-[#edf3f0] px-4 py-5 text-[#16201b] sm:px-6 lg:px-8">
@@ -408,6 +474,9 @@ export default async function Home() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${statusTheme.text}`}>
               Today&apos;s bike recommendation
+            </p>
+            <p className="text-xs font-semibold text-[#53605a] sm:text-sm">
+              Updated {formatTime(new Date(forecast.generatedAt))}
             </p>
             <span className={`inline-flex h-11 items-center justify-center rounded-md px-5 text-sm font-bold ${statusTheme.badge}`}>
               {statusTheme.label}
@@ -424,6 +493,39 @@ export default async function Home() {
                 </div>
               );
             })}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-black/10 bg-white p-3 shadow-sm sm:p-4">
+          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.14em] text-[#647069]">Right now</p>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg border border-black/10 bg-[#f8fbfa] p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#647069]">Temperature</p>
+              <p className="mt-2 text-3xl font-semibold">
+                {typeof current.temperature === "number" ? `${Math.round(current.temperature)} F` : "--"}
+              </p>
+              <p className="mt-1 text-sm text-[#647069]">{current.condition}</p>
+            </div>
+            <div className="rounded-lg border border-black/10 bg-[#f8fbfa] p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#647069]">Precipitation</p>
+              <p className="mt-2 text-3xl font-semibold">
+                {typeof current.precipitationProbability === "number" ? `${Math.round(current.precipitationProbability)}%` : "--"}
+              </p>
+              <p className="mt-1 text-sm text-[#647069]">
+                {typeof current.precipitation === "number" ? `${current.precipitation.toFixed(3)} in this hour` : "Chance unavailable"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-black/10 bg-[#f8fbfa] p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#647069]">Air and wind</p>
+              <p className="mt-2 text-3xl font-semibold">
+                {typeof currentAqi === "number" ? `${Math.round(currentAqi)} AQI` : "--"}
+              </p>
+              <p className="mt-1 text-sm text-[#647069]">
+                {airQualityText(currentAqi)}
+                {typeof current.windSpeed === "number" ? `, wind ${Math.round(current.windSpeed)} mph` : ""}
+                {typeof current.windGust === "number" ? `, gusts ${Math.round(current.windGust)} mph` : ""}
+              </p>
+            </div>
           </div>
         </div>
 

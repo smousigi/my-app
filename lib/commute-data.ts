@@ -32,6 +32,7 @@ export type CommuteApiResponse = {
   };
   sources: {
     openMeteo: unknown;
+    airQuality: unknown;
     elevation: unknown;
     nwsHourly: unknown;
     alerts: unknown;
@@ -347,6 +348,12 @@ export async function getCommuteData(home: Point, work: Point): Promise<CommuteA
   forecastUrl.searchParams.set("forecast_days", "2");
   forecastUrl.searchParams.set("timezone", "America/Los_Angeles");
 
+  const airQualityUrl = new URL("https://air-quality-api.open-meteo.com/v1/air-quality");
+  airQualityUrl.searchParams.set("latitude", `${midpoint.lat}`);
+  airQualityUrl.searchParams.set("longitude", `${midpoint.lon}`);
+  airQualityUrl.searchParams.set("current", "us_aqi,pm2_5");
+  airQualityUrl.searchParams.set("timezone", "America/Los_Angeles");
+
   const elevationUrl = new URL("https://api.open-meteo.com/v1/elevation");
   elevationUrl.searchParams.set("latitude", `${home.lat},${midpoint.lat},${work.lat}`);
   elevationUrl.searchParams.set("longitude", `${home.lon},${midpoint.lon},${work.lon}`);
@@ -354,8 +361,9 @@ export async function getCommuteData(home: Point, work: Point): Promise<CommuteA
   const nwsPointUrl = `https://api.weather.gov/points/${midpoint.lat.toFixed(4)},${midpoint.lon.toFixed(4)}`;
   const alertsUrl = `https://api.weather.gov/alerts/active?point=${midpoint.lat.toFixed(4)},${midpoint.lon.toFixed(4)}`;
 
-  const [openMeteo, elevation, nwsPoint, alerts, constructionImpacts] = await Promise.all([
+  const [openMeteo, airQuality, elevation, nwsPoint, alerts, constructionImpacts] = await Promise.all([
     fetchJson<unknown>(forecastUrl.toString()),
+    fetchJson<unknown>(airQualityUrl.toString()),
     fetchJson<unknown>(elevationUrl.toString()),
     fetchJson<NwsPointResponse>(nwsPointUrl),
     fetchJson<unknown>(alertsUrl),
@@ -370,6 +378,7 @@ export async function getCommuteData(home: Point, work: Point): Promise<CommuteA
     points: { home, midpoint, work },
     sources: {
       openMeteo,
+      airQuality,
       elevation,
       nwsHourly,
       alerts,
