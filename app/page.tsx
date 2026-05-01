@@ -3,7 +3,6 @@ import {
   getCommuteData,
   northgateStation,
   workDestination,
-  type ConstructionImpact,
   type CommuteApiResponse as RawCommuteApiResponse,
 } from "@/lib/commute-data";
 
@@ -142,7 +141,7 @@ const alternateRoutePlans: RoutePlan[] = [
     waypoints: ["Westlake Ave N and Mercer St, Seattle, WA", "Fremont Bridge, Seattle, WA", "Green Lake Park, Seattle, WA"],
     title: "2021 7th Ave to Northgate via Fremont",
     description:
-      "This reverses the Fremont/Westlake alternate to avoid heavier active permits along the default Roosevelt/Eastlake corridor.",
+      "This reverses the Fremont / Westlake alternate to avoid heavier active permits along the default Roosevelt / Eastlake corridor.",
     steps: [
       "Leave 2021 7th Ave and head toward South Lake Union.",
       "Turn onto the Westlake bike corridor.",
@@ -343,20 +342,34 @@ function indicatorStyles(status: WindowFinding["status"]) {
   };
 }
 
-function impactLabel(impact?: ConstructionImpact) {
-  if (!impact) {
-    return "No major active permit surfaced near this corridor.";
+function constructionSummary({
+  alternateScore,
+  defaultScore,
+  alternateImpacts,
+  defaultImpacts,
+  recommendedCorridor,
+}: CommuteApiResponse["sources"]["construction"]) {
+  const gap = Math.abs(defaultScore - alternateScore);
+  const worseImpact = defaultScore > alternateScore ? defaultImpacts[0] : alternateImpacts[0];
+  const workText = [worseImpact?.impactType, worseImpact?.description, worseImpact?.projectName].join(" ").toLowerCase();
+  const plainWork = workText.includes("paving")
+    ? "roadway paving work, which can mean rough pavement, crews, lane shifts, or short detours"
+    : workText.includes("excavation") || workText.includes("trench") || workText.includes("drill")
+      ? "street digging or utility work, which can narrow the bike route or create rough patches"
+      : workText.includes("mobility") || workText.includes("closure") || workText.includes("detour")
+        ? "right-of-way work that may block or redirect part of the route"
+        : "active street work that could slow the ride";
+  const detail = worseImpact ? `The main issue looks like ${plainWork}.` : "";
+
+  if (gap <= 4) {
+    return `Construction impact looks similar on both corridors. Use the recommended route and watch for short detours. ${detail}`;
   }
 
-  return [
-    impact.severity.toUpperCase(),
-    impact.address,
-    impact.closureType,
-    impact.description,
-    impact.endDate ? `until ${impact.endDate}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" - ");
+  if (recommendedCorridor === "alternate") {
+    return `Roosevelt / Eastlake has noticeably heavier active work nearby, so the app is routing you through Green Lake / Fremont / Westlake today. ${detail}`;
+  }
+
+  return `Green Lake / Fremont / Westlake has more nearby active work, so the app is keeping you on Roosevelt / Eastlake today. ${detail}`;
 }
 
 export default async function Home() {
@@ -387,8 +400,6 @@ export default async function Home() {
   const statusTheme = indicatorStyles(overall);
   const construction = forecast.sources.construction;
   const routePlans = construction.recommendedCorridor === "alternate" ? alternateRoutePlans : defaultRoutePlans;
-  const constructionImpacts =
-    construction.recommendedCorridor === "alternate" ? construction.defaultImpacts : construction.alternateImpacts;
 
   return (
     <main className="min-h-screen bg-[#edf3f0] px-4 py-5 text-[#16201b] sm:px-6 lg:px-8">
@@ -458,16 +469,17 @@ export default async function Home() {
                 {alerts.length ? `${alerts.length} active NWS alert(s) near the route.` : "No active NWS alerts near the route."}
               </p>
             </div>
-            <a
-              href={forecast.sources.construction.url}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg border border-black/10 bg-white p-4 transition hover:bg-[#f8fbfa]"
-            >
-              <p className="font-semibold">Construction</p>
-              <p className="mt-2 text-sm leading-6 text-[#647069]">{construction.recommendation}</p>
-              <p className="mt-2 text-xs leading-5 text-[#647069]">{impactLabel(constructionImpacts[0])}</p>
-            </a>
+            <div className="rounded-lg border border-black/10 bg-white p-4">
+              <a
+                href={forecast.sources.construction.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold transition hover:text-[#1f5e4d]"
+              >
+                Construction
+              </a>
+              <p className="mt-2 text-sm leading-6 text-[#647069]">{constructionSummary(construction)}</p>
+            </div>
           </div>
         </div>
       </section>

@@ -10,6 +10,19 @@ export type Point = {
   lon: number;
 };
 
+export type ConstructionImpact = {
+  id: string;
+  corridor: "default" | "alternate";
+  impactType?: string;
+  description?: string;
+  agency?: string;
+  projectName?: string;
+  startDate?: string;
+  endDate?: string;
+  distanceMeters: number;
+  severity: "minor" | "moderate" | "extensive";
+};
+
 export type CommuteApiResponse = {
   generatedAt: string;
   points: {
@@ -28,24 +41,13 @@ export type CommuteApiResponse = {
       note: string;
       defaultImpacts: ConstructionImpact[];
       alternateImpacts: ConstructionImpact[];
+      defaultScore: number;
+      alternateScore: number;
       recommendedCorridor: "default" | "alternate";
       recommendation: string;
+      reasons: string[];
     };
   };
-};
-
-export type ConstructionImpact = {
-  id: string;
-  address?: string;
-  corridor: "default" | "alternate";
-  closureType?: string;
-  description?: string;
-  mobilityType?: string;
-  projectName?: string;
-  startDate?: string;
-  endDate?: string;
-  spaceSqft?: number;
-  severity: "minor" | "moderate" | "extensive";
 };
 
 type NwsPointResponse = {
@@ -54,22 +56,30 @@ type NwsPointResponse = {
   };
 };
 
-type StreetUseFeature = {
-  attributes?: {
-    RECORD_ID?: string;
-    RECORD_ADDRESS?: string;
-    USE_DESCRIPTION?: string;
-    USE_CLOSURE_TYPE?: string;
-    USE_MOBILITY_TYPE?: string;
-    USE_START_DATE?: number;
-    USE_EXPIRE_DATE?: number;
-    USE_SPACE_SQFT?: number;
-    PROJECT_NAME?: string;
+type DotMapsFeature = {
+  attrs?: {
+    agency?: string;
+    descr?: string;
+    end_date?: string;
+    id?: number | string;
+    name?: string;
+    permit_number?: string;
+    start_date?: string;
+    type?: string;
+  };
+  center?: {
+    coordinates?: [number, number];
+  };
+  id?: number | string;
+  remote_id?: string;
+  shape?: {
+    coordinates?: unknown;
+    type?: string;
   };
 };
 
-type StreetUseResponse = {
-  features?: StreetUseFeature[];
+type DotMapsResponse = {
+  results?: DotMapsFeature[];
 };
 
 export const northgateStation: LocationPoint = {
@@ -108,84 +118,124 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T | null> 
   }
 }
 
-function dateFromArcgis(value?: number) {
-  return typeof value === "number" ? new Date(value).toLocaleDateString("en-US") : undefined;
-}
-
-function impactSeverity(feature: StreetUseFeature): ConstructionImpact["severity"] {
-  const attributes = feature.attributes ?? {};
-  const text = [
-    attributes.USE_DESCRIPTION,
-    attributes.USE_CLOSURE_TYPE,
-    attributes.USE_MOBILITY_TYPE,
-    attributes.PROJECT_NAME,
-  ]
+function impactSeverity(feature: DotMapsFeature): ConstructionImpact["severity"] {
+  const attrs = feature.attrs ?? {};
+  const text = [attrs.type, attrs.descr, attrs.name, attrs.agency]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-  const sqft = attributes.USE_SPACE_SQFT ?? 0;
 
-  if (/full|closed|closure|crane|major|street improvement|utility major|excavation|detour/.test(text) || sqft >= 1000) {
+  if (/closed|closure|detour|block|crane|paving|excavation|open trench|directional drill|mobility impact/.test(text)) {
     return "extensive";
   }
 
-  if (/lane|sidewalk|bike|trail|parking|pedestrian|mobility|row construction/.test(text) || sqft >= 250) {
+  if (/lane|sidewalk|bike|trail|pedestrian|utility|conduit|water|service renew|repair/.test(text)) {
     return "moderate";
   }
 
   return "minor";
 }
 
-async function queryStreetUsePoint(point: Point, corridor: ConstructionImpact["corridor"]) {
-  const url = new URL("https://gisdata.seattle.gov/server/rest/services/SDOT/SDOT_StreetUse_V2/MapServer/0/query");
-  url.searchParams.set("f", "json");
-  url.searchParams.set("where", "1=1");
-  url.searchParams.set(
-    "outFields",
-    [
-      "RECORD_ID",
-      "RECORD_ADDRESS",
-      "USE_DESCRIPTION",
-      "USE_CLOSURE_TYPE",
-      "USE_MOBILITY_TYPE",
-      "USE_START_DATE",
-      "USE_EXPIRE_DATE",
-      "USE_SPACE_SQFT",
-      "PROJECT_NAME",
-    ].join(","),
+function milesToMeters(miles: number) {
+  return miles * 1609.344;
+}
+
+function pointToSegmentDistanceMeters(point: Point, start: Point, end: Point) {
+  const avgLat = ((start.lat + end.lat + point.lat) / 3) * (Math.PI / 180);
+  const x = (candidate: Point) => milesToMeters((candidate.lon - start.lon) * 69.172 * Math.cos(avgLat));
+  const y = (candidate: Point) => milesToMeters((candidate.lat - start.lat) * 69.0);
+  const px = x(point);
+  const py = y(point);
+  const ex = x(end);
+  const ey = y(end);
+  const length = ex * ex + ey * ey;
+  const t = length === 0 ? 0 : Math.max(0, Math.min(1, (px * ex + py * ey) / length));
+  return Math.hypot(px - t * ex, py - t * ey);
+}
+
+function pointToCorridorDistanceMeters(point: Point, corridor: Point[]) {
+  return Math.min(
+    ...corridor.slice(0, -1).map((segmentStart, index) => pointToSegmentDistanceMeters(point, segmentStart, corridor[index + 1])),
   );
-  url.searchParams.set("returnGeometry", "false");
-  url.searchParams.set("geometry", `${point.lon},${point.lat}`);
-  url.searchParams.set("geometryType", "esriGeometryPoint");
-  url.searchParams.set("inSR", "4326");
-  url.searchParams.set("spatialRel", "esriSpatialRelIntersects");
-  url.searchParams.set("distance", "550");
-  url.searchParams.set("units", "esriSRUnit_Meter");
-  url.searchParams.set("resultRecordCount", "50");
+}
 
-  const data = await fetchJson<StreetUseResponse>(url.toString());
-
-  return (data?.features ?? []).map((feature): ConstructionImpact | null => {
-    const attributes = feature.attributes;
-
-    if (!attributes?.RECORD_ID) {
-      return null;
+function featurePoints(feature: DotMapsFeature): Point[] {
+  const points: Point[] = [];
+  const addCoordinate = (coordinate: unknown) => {
+    if (
+      Array.isArray(coordinate) &&
+      coordinate.length >= 2 &&
+      typeof coordinate[0] === "number" &&
+      typeof coordinate[1] === "number"
+    ) {
+      points.push({ lon: coordinate[0], lat: coordinate[1] });
+    }
+  };
+  const walk = (coordinates: unknown) => {
+    if (!Array.isArray(coordinates)) {
+      return;
     }
 
-    return {
-      id: attributes.RECORD_ID,
-      address: attributes.RECORD_ADDRESS,
-      corridor,
-      closureType: attributes.USE_CLOSURE_TYPE,
-      description: attributes.USE_DESCRIPTION,
-      mobilityType: attributes.USE_MOBILITY_TYPE,
-      projectName: attributes.PROJECT_NAME,
-      startDate: dateFromArcgis(attributes.USE_START_DATE),
-      endDate: dateFromArcgis(attributes.USE_EXPIRE_DATE),
-      spaceSqft: attributes.USE_SPACE_SQFT,
-      severity: impactSeverity(feature),
-    };
-  });
+    if (typeof coordinates[0] === "number") {
+      addCoordinate(coordinates);
+      return;
+    }
+
+    coordinates.forEach(walk);
+  };
+
+  walk(feature.shape?.coordinates);
+  addCoordinate(feature.center?.coordinates);
+  return points;
+}
+
+async function queryDotMapsLayer(layer: string) {
+  const url = new URL(`https://streetwork.seattle.gov/publicapi/temporal_entity/${layer}/`);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("bbox", "-122.37,47.60,-122.30,47.72,EPSG:4326");
+
+  return (await fetchJson<DotMapsResponse>(url.toString()))?.results ?? [];
+}
+
+function normalizeImpact(
+  feature: DotMapsFeature,
+  corridorName: ConstructionImpact["corridor"],
+  corridor: Point[],
+): ConstructionImpact | null {
+  const points = featurePoints(feature);
+
+  if (!points.length) {
+    return null;
+  }
+
+  const nearestDistance = Math.min(...points.map((point) => pointToCorridorDistanceMeters(point, corridor)));
+
+  if (nearestDistance > 260) {
+    return null;
+  }
+
+  return {
+    id: String(feature.remote_id ?? feature.id ?? feature.attrs?.id),
+    corridor: corridorName,
+    impactType: feature.attrs?.type,
+    description: feature.attrs?.descr,
+    agency: feature.attrs?.agency,
+    projectName: feature.attrs?.name,
+    startDate: feature.attrs?.start_date,
+    endDate: feature.attrs?.end_date,
+    distanceMeters: Math.round(nearestDistance),
+    severity: impactSeverity(feature),
+  };
+}
+
+function impactSummary(impact?: ConstructionImpact) {
+  if (!impact) {
+    return "";
+  }
+
+  return `Top differentiator: ${impact.impactType ?? "construction"} ${impact.distanceMeters}m from the corridor${
+    impact.projectName ? ` (${impact.projectName})` : ""
+  }${impact.endDate ? ` through ${impact.endDate}` : ""}.`;
 }
 
 async function getConstructionImpacts() {
@@ -208,17 +258,14 @@ async function getConstructionImpacts() {
     { lat: 47.6236, lon: -122.3381 },
     { lat: 47.6155, lon: -122.3389 },
   ];
-
-  const [defaultResults, alternateResults] = await Promise.all([
-    Promise.all(defaultCorridor.map((point) => queryStreetUsePoint(point, "default"))),
-    Promise.all(alternateCorridor.map((point) => queryStreetUsePoint(point, "alternate"))),
-  ]);
-
-  const dedupe = (items: (ConstructionImpact | null)[][]) => {
+  const layers = ["excavation", "paving", "mobility_impact"];
+  const features = (await Promise.all(layers.map(queryDotMapsLayer))).flat();
+  const defaultResults = features.map((feature) => normalizeImpact(feature, "default", defaultCorridor));
+  const alternateResults = features.map((feature) => normalizeImpact(feature, "alternate", alternateCorridor));
+  const dedupe = (items: (ConstructionImpact | null)[]) => {
     const seen = new Set<string>();
 
     return items
-      .flat()
       .filter((item): item is ConstructionImpact => Boolean(item))
       .filter((item) => {
         if (seen.has(item.id)) {
@@ -229,7 +276,7 @@ async function getConstructionImpacts() {
       })
       .sort((a, b) => {
         const weight = { extensive: 0, moderate: 1, minor: 2 };
-        return weight[a.severity] - weight[b.severity];
+        return weight[a.severity] - weight[b.severity] || a.distanceMeters - b.distanceMeters;
       })
       .slice(0, 8);
   };
@@ -237,19 +284,36 @@ async function getConstructionImpacts() {
   const defaultImpacts = dedupe(defaultResults);
   const alternateImpacts = dedupe(alternateResults);
   const score = (impacts: ConstructionImpact[]) =>
-    impacts.reduce((total, impact) => total + (impact.severity === "extensive" ? 5 : impact.severity === "moderate" ? 2 : 1), 0);
+    impacts.reduce((total, impact) => {
+      const severityWeight = impact.severity === "extensive" ? 12 : impact.severity === "moderate" ? 5 : 1;
+      const typeWeight = impact.impactType === "Mobility Impact" ? 6 : impact.impactType === "Paving" ? 5 : 3;
+      const proximityWeight = impact.distanceMeters <= 75 ? 5 : impact.distanceMeters <= 160 ? 3 : 1;
+      return total + severityWeight + typeWeight + proximityWeight;
+    }, 0);
   const defaultScore = score(defaultImpacts);
   const alternateScore = score(alternateImpacts);
-  const recommendedCorridor: "default" | "alternate" = defaultScore >= alternateScore + 3 ? "alternate" : "default";
+  const recommendedCorridor: "default" | "alternate" = defaultScore > alternateScore ? "alternate" : "default";
+  const moreImpacted = defaultScore > alternateScore ? "Roosevelt / Eastlake" : "Green Lake / Fremont / Westlake";
+  const lessImpacted = defaultScore > alternateScore ? "Green Lake / Fremont / Westlake" : "Roosevelt / Eastlake";
+  const worseImpacts = defaultScore > alternateScore ? defaultImpacts : alternateImpacts;
+  const betterImpacts = defaultScore > alternateScore ? alternateImpacts : defaultImpacts;
+  const reasons = [
+    `${moreImpacted} score: ${Math.max(defaultScore, alternateScore)} vs ${lessImpacted}: ${Math.min(defaultScore, alternateScore)}.`,
+    `${moreImpacted} has ${worseImpacts.length} nearby active project(s); ${lessImpacted} has ${betterImpacts.length}.`,
+    impactSummary(worseImpacts[0]),
+  ].filter(Boolean);
 
   return {
     defaultImpacts,
     alternateImpacts,
+    defaultScore,
+    alternateScore,
     recommendedCorridor,
     recommendation:
       recommendedCorridor === "alternate"
-        ? "SDOT active right-of-way permits look heavier on the default Roosevelt/Eastlake corridor. Prefer the Fremont/Westlake alternate and verify in Google Maps before leaving."
-        : "SDOT active right-of-way permits do not show a clearly better construction-avoidance alternate. Use the default Roosevelt/Eastlake bike corridor and verify current detours before leaving.",
+        ? "SDOT dotMaps shows heavier active construction close to Roosevelt / Eastlake. Prefer Green Lake / Fremont / Westlake today."
+        : "SDOT dotMaps does not show a stronger construction reason to avoid Roosevelt / Eastlake today. Use the default bike corridor.",
+    reasons,
   };
 }
 
@@ -312,7 +376,7 @@ export async function getCommuteData(home: Point, work: Point): Promise<CommuteA
       construction: {
         name: "SDOT Project and Construction Coordination Map",
         url: "https://streetwork.seattle.gov/map",
-        note: "Active Street Use permit records near the default and alternate bike corridors.",
+        note: "Current dotMaps construction projects within 260m of the compared bike corridors.",
         ...constructionImpacts,
       },
     },
