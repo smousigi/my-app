@@ -8,6 +8,7 @@ export type RoutePlan = {
   label: string;
   origin: LocationPoint;
   destination: LocationPoint;
+  waypoints?: string[];
   title: string;
   description: string;
   steps: string[];
@@ -24,11 +25,15 @@ export default function RouteTabs({
   const activeRoute = routePlans.find((route) => route.id === activeRouteId) ?? routePlans[0];
   const directionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
     activeRoute.origin.address,
-  )}&destination=${encodeURIComponent(activeRoute.destination.address)}&travelmode=bicycling`;
+  )}&destination=${encodeURIComponent(activeRoute.destination.address)}&travelmode=bicycling${
+    activeRoute.waypoints?.length ? `&waypoints=${encodeURIComponent(activeRoute.waypoints.join("|"))}` : ""
+  }`;
   const embedUrl = mapsKey
     ? `https://www.google.com/maps/embed/v1/directions?key=${mapsKey}&origin=${encodeURIComponent(
         activeRoute.origin.address,
-      )}&destination=${encodeURIComponent(activeRoute.destination.address)}&mode=bicycling&avoid=highways`
+      )}&destination=${encodeURIComponent(activeRoute.destination.address)}&mode=bicycling&avoid=highways${
+        activeRoute.waypoints?.length ? `&waypoints=${encodeURIComponent(activeRoute.waypoints.join("|"))}` : ""
+      }`
     : "";
 
   return (

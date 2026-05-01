@@ -3,6 +3,7 @@ import {
   getCommuteData,
   northgateStation,
   workDestination,
+  type ConstructionImpact,
   type CommuteApiResponse as RawCommuteApiResponse,
 } from "@/lib/commute-data";
 
@@ -56,15 +57,21 @@ type RideStats = {
   maxGust?: number;
 };
 
+type DepartureCheck = {
+  label: string;
+  finding: WindowFinding;
+};
+
 const routeDistanceMiles = 8.1;
 const routeMinutes = "35-50";
 const rainyCodes = new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99]);
-const routePlans: RoutePlan[] = [
+const defaultRoutePlans: RoutePlan[] = [
   {
     id: "there",
     label: "Ride to work",
     origin: northgateStation,
     destination: workDestination,
+    waypoints: ["Roosevelt Station, Seattle, WA", "Eastlake Ave E and E Louisa St, Seattle, WA"],
     title: "Northgate to 2021 7th Ave",
     description:
       "Use Google bicycling directions as the live route source, favoring the Roosevelt and Eastlake bike corridor over Aurora.",
@@ -86,6 +93,7 @@ const routePlans: RoutePlan[] = [
     label: "Ride home",
     origin: workDestination,
     destination: northgateStation,
+    waypoints: ["Eastlake Ave E and E Louisa St, Seattle, WA", "Roosevelt Station, Seattle, WA"],
     title: "2021 7th Ave to Northgate",
     description:
       "Reverse the same lower-stress bike corridor, checking Google for one-way constraints, closures, and current detours.",
@@ -104,6 +112,50 @@ const routePlans: RoutePlan[] = [
   },
 ];
 
+const alternateRoutePlans: RoutePlan[] = [
+  {
+    id: "there",
+    label: "Ride to work",
+    origin: northgateStation,
+    destination: workDestination,
+    waypoints: ["Green Lake Park, Seattle, WA", "Fremont Bridge, Seattle, WA", "Westlake Ave N and Mercer St, Seattle, WA"],
+    title: "Northgate to 2021 7th Ave via Fremont",
+    description:
+      "SDOT construction signals are heavier on the default corridor, so this alternate biases toward Green Lake, Fremont, and Westlake before entering South Lake Union.",
+    steps: [
+      "Exit Northgate Station toward NE 103rd St.",
+      "Turn right onto NE 103rd St.",
+      "Work south and west toward the Green Lake bike network.",
+      "Continue around Green Lake toward Stone Way N.",
+      "Turn south toward Fremont using the signed bike route.",
+      "Cross the Fremont Bridge.",
+      "Continue southeast onto the Westlake bike corridor.",
+      "Follow Westlake Ave N toward South Lake Union.",
+      "Turn toward 7th Ave near Mercer/Denny, then continue to 2021 7th Ave.",
+    ],
+  },
+  {
+    id: "home",
+    label: "Ride home",
+    origin: workDestination,
+    destination: northgateStation,
+    waypoints: ["Westlake Ave N and Mercer St, Seattle, WA", "Fremont Bridge, Seattle, WA", "Green Lake Park, Seattle, WA"],
+    title: "2021 7th Ave to Northgate via Fremont",
+    description:
+      "This reverses the Fremont/Westlake alternate to avoid heavier active permits along the default Roosevelt/Eastlake corridor.",
+    steps: [
+      "Leave 2021 7th Ave and head toward South Lake Union.",
+      "Turn onto the Westlake bike corridor.",
+      "Continue northwest on Westlake Ave N.",
+      "Cross the Fremont Bridge.",
+      "Continue north toward Stone Way N and Green Lake.",
+      "Follow the Green Lake bike network east/north.",
+      "Work back toward Northgate on signed neighborhood bike connections.",
+      "Turn toward NE 103rd St and enter Northgate Station.",
+    ],
+  },
+];
+
 function timeToday(hours: number, minutes: number) {
   const date = new Date();
   date.setHours(hours, minutes, 0, 0);
@@ -115,6 +167,11 @@ function rideWindows(): RideWindow[] {
     { label: "Morning ride", start: timeToday(8, 0), end: timeToday(9, 30) },
     { label: "Afternoon ride", start: timeToday(15, 30), end: timeToday(17, 0) },
   ];
+}
+
+function departureWindow(label: string, hours: number, minutes: number): RideWindow {
+  const start = timeToday(hours, minutes);
+  return { label, start, end: new Date(start.getTime() + 75 * 60000) };
 }
 
 function formatTime(date: Date) {
@@ -259,6 +316,49 @@ function combinedStats(windows: RideWindow[], data?: CommuteApiResponse): RideSt
   };
 }
 
+function indicatorStyles(status: WindowFinding["status"]) {
+  if (status === "go") {
+    return {
+      shell: "border-[#82cfa9] bg-[#dff4e8]",
+      badge: "bg-[#12613d] text-white",
+      text: "text-[#12613d]",
+      label: "GOOD",
+    };
+  }
+
+  if (status === "caution") {
+    return {
+      shell: "border-[#e6c56a] bg-[#fff0c7]",
+      badge: "bg-[#76510b] text-white",
+      text: "text-[#76510b]",
+      label: "MAYBE",
+    };
+  }
+
+  return {
+    shell: "border-[#ef9d90] bg-[#ffe1dc]",
+    badge: "bg-[#913425] text-white",
+    text: "text-[#913425]",
+    label: "BAD",
+  };
+}
+
+function impactLabel(impact?: ConstructionImpact) {
+  if (!impact) {
+    return "No major active permit surfaced near this corridor.";
+  }
+
+  return [
+    impact.severity.toUpperCase(),
+    impact.address,
+    impact.closureType,
+    impact.description,
+    impact.endDate ? `until ${impact.endDate}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" - ");
+}
+
 export default async function Home() {
   const forecast = (await getCommuteData(northgateStation, workDestination)) as CommuteApiResponse;
   const windows = rideWindows();
@@ -269,6 +369,14 @@ export default async function Home() {
       ? "caution"
       : "go";
   const stats = combinedStats(windows, forecast);
+  const departureChecks: DepartureCheck[] = [
+    departureWindow("Leave 8:00", 8, 0),
+    departureWindow("Leave 9:00", 9, 0),
+    departureWindow("Leave 9:30", 9, 30),
+    departureWindow("Leave 3:30", 15, 30),
+    departureWindow("Leave 4:00", 16, 0),
+    departureWindow("Leave 4:30", 16, 30),
+  ].map((window) => ({ label: window.label, finding: analyzeWindow(window, forecast) }));
   const elevations = forecast.sources.elevation?.elevation;
   const elevationText =
     elevations && elevations.length >= 3
@@ -276,27 +384,11 @@ export default async function Home() {
       : "Elevation unavailable";
   const alerts = forecast.sources.alerts?.features ?? [];
   const mapsKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY;
-  const statusTheme =
-    overall === "go"
-      ? {
-          shell: "border-[#82cfa9] bg-[#dff4e8]",
-          badge: "bg-[#12613d] text-white",
-          text: "text-[#12613d]",
-          label: "GOOD",
-        }
-      : overall === "caution"
-        ? {
-            shell: "border-[#e6c56a] bg-[#fff0c7]",
-            badge: "bg-[#76510b] text-white",
-            text: "text-[#76510b]",
-            label: "MAYBE",
-          }
-        : {
-            shell: "border-[#ef9d90] bg-[#ffe1dc]",
-            badge: "bg-[#913425] text-white",
-            text: "text-[#913425]",
-            label: "BAD",
-          };
+  const statusTheme = indicatorStyles(overall);
+  const construction = forecast.sources.construction;
+  const routePlans = construction.recommendedCorridor === "alternate" ? alternateRoutePlans : defaultRoutePlans;
+  const constructionImpacts =
+    construction.recommendedCorridor === "alternate" ? construction.defaultImpacts : construction.alternateImpacts;
 
   return (
     <main className="min-h-screen bg-[#edf3f0] px-4 py-5 text-[#16201b] sm:px-6 lg:px-8">
@@ -309,6 +401,18 @@ export default async function Home() {
             <span className={`inline-flex h-11 items-center justify-center rounded-md px-5 text-sm font-bold ${statusTheme.badge}`}>
               {statusTheme.label}
             </span>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {departureChecks.map((check) => {
+              const theme = indicatorStyles(check.finding.status);
+
+              return (
+                <div key={check.label} className={`rounded-md border p-3 ${theme.shell}`}>
+                  <p className="text-xs font-semibold text-[#435047]">{check.label}</p>
+                  <p className={`mt-1 text-sm font-bold ${theme.text}`}>{theme.label}</p>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -361,35 +465,9 @@ export default async function Home() {
               className="rounded-lg border border-black/10 bg-white p-4 transition hover:bg-[#f8fbfa]"
             >
               <p className="font-semibold">Construction</p>
-              <p className="mt-2 text-sm leading-6 text-[#647069]">Open SDOT right-of-way projects before leaving.</p>
+              <p className="mt-2 text-sm leading-6 text-[#647069]">{construction.recommendation}</p>
+              <p className="mt-2 text-xs leading-5 text-[#647069]">{impactLabel(constructionImpacts[0])}</p>
             </a>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            {findings.map((finding) => (
-              <article key={finding.label} className="rounded-lg border border-black/10 bg-white p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="font-semibold">{finding.label}</h2>
-                  <span
-                    className={`rounded-md px-2 py-1 text-xs font-bold ${
-                      finding.status === "go"
-                        ? "bg-[#dff4e8] text-[#12613d]"
-                        : finding.status === "caution"
-                          ? "bg-[#fff0c7] text-[#76510b]"
-                          : "bg-[#ffe1dc] text-[#913425]"
-                    }`}
-                  >
-                    {finding.status === "go" ? "GO" : finding.status === "caution" ? "TOSS UP" : "NO"}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-[#53605a]">{finding.summary}</p>
-                <ul className="mt-3 space-y-1 text-sm text-[#647069]">
-                  {finding.details.map((detail) => (
-                    <li key={detail}>{detail}</li>
-                  ))}
-                </ul>
-              </article>
-            ))}
           </div>
         </div>
       </section>
