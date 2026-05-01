@@ -69,11 +69,16 @@ const routePlans: RoutePlan[] = [
     description:
       "Use Google bicycling directions as the live route source, favoring the Roosevelt and Eastlake bike corridor over Aurora.",
     steps: [
-      "Leave Northgate Station and head south toward the Northgate bike network.",
-      "Work toward Roosevelt using calmer neighborhood streets and signed bike connections.",
-      "Continue south through the Roosevelt and University District corridor.",
-      "Use the Eastlake bike corridor toward South Lake Union.",
-      "Enter downtown/South Lake Union and finish on 7th Ave near 2021 7th Ave.",
+      "Exit Northgate Station toward NE 103rd St.",
+      "Turn right onto NE 103rd St.",
+      "Turn left onto 1st Ave NE and continue south.",
+      "Turn right onto NE 92nd St.",
+      "Turn left onto Meridian Ave N and follow the signed neighborhood greenway south.",
+      "Continue onto the Roosevelt bike corridor through the Maple Leaf and Roosevelt area.",
+      "Keep south through the University District, following bike-route signs toward Eastlake.",
+      "Bear right onto Eastlake Ave E and continue south in the bike corridor.",
+      "Continue into South Lake Union toward Westlake Ave N.",
+      "Turn left toward 7th Ave, then continue to 2021 7th Ave.",
     ],
   },
   {
@@ -85,11 +90,16 @@ const routePlans: RoutePlan[] = [
     description:
       "Reverse the same lower-stress bike corridor, checking Google for one-way constraints, closures, and current detours.",
     steps: [
-      "Leave 2021 7th Ave and work north out of South Lake Union.",
-      "Connect to the Eastlake bike corridor heading north.",
-      "Continue through the University District and Roosevelt corridor.",
-      "Use neighborhood bike connections toward Northgate.",
-      "Finish at Northgate Station and avoid high-speed arterials where Google offers calmer bike alternatives.",
+      "Leave 2021 7th Ave and head north toward South Lake Union.",
+      "Turn right toward Westlake Ave N or the signed bike connection Google recommends.",
+      "Turn left onto the Eastlake bike corridor and continue north.",
+      "Continue north through Eastlake toward the University District.",
+      "Keep right where the route transitions toward Roosevelt.",
+      "Continue north on the Roosevelt bike corridor.",
+      "Follow the neighborhood greenway north through Maple Leaf.",
+      "Turn right toward NE 92nd St.",
+      "Turn left onto 1st Ave NE and continue north.",
+      "Turn right onto NE 103rd St, then enter Northgate Station.",
     ],
   },
 ];
@@ -273,43 +283,30 @@ export default async function Home() {
           badge: "bg-[#12613d] text-white",
           text: "text-[#12613d]",
           label: "GOOD",
-          title: "Bike today",
-          summary: "The full 8:00-9:30 AM and 3:30-5:00 PM windows clear your rain and 50 F rules.",
         }
       : overall === "caution"
         ? {
             shell: "border-[#e6c56a] bg-[#fff0c7]",
             badge: "bg-[#76510b] text-white",
             text: "text-[#76510b]",
-            label: "TOSS UP",
-            title: "Bike with caution",
-            summary: "This is close: very light rain risk, near-threshold temperature, or wind means re-check before leaving.",
+            label: "MAYBE",
           }
         : {
             shell: "border-[#ef9d90] bg-[#ffe1dc]",
             badge: "bg-[#913425] text-white",
             text: "text-[#913425]",
-            label: "NOT GOOD",
-            title: "Skip the bike",
-            summary: "At least one commute window has rain risk or temperature below 50 F.",
+            label: "BAD",
           };
 
   return (
     <main className="min-h-screen bg-[#edf3f0] px-4 py-5 text-[#16201b] sm:px-6 lg:px-8">
       <section className="mx-auto grid max-w-7xl gap-5">
         <div className={`rounded-lg border p-5 shadow-xl shadow-black/10 sm:p-6 ${statusTheme.shell}`}>
-          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
-            <div>
-              <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${statusTheme.text}`}>
-                Today&apos;s bike recommendation
-              </p>
-              <h1 className="mt-2 text-4xl font-semibold leading-tight sm:text-5xl">{statusTheme.title}</h1>
-              <p className="mt-3 max-w-3xl leading-7 text-[#435047]">{statusTheme.summary}</p>
-              <p className="mt-2 text-sm font-semibold text-[#53605a]">
-                Updated {formatTime(new Date(forecast.generatedAt))}
-              </p>
-            </div>
-            <span className={`inline-flex h-12 items-center justify-center rounded-md px-5 text-sm font-bold ${statusTheme.badge}`}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${statusTheme.text}`}>
+              Today&apos;s bike recommendation
+            </p>
+            <span className={`inline-flex h-11 items-center justify-center rounded-md px-5 text-sm font-bold ${statusTheme.badge}`}>
               {statusTheme.label}
             </span>
           </div>
@@ -318,30 +315,30 @@ export default async function Home() {
         <RouteTabs mapsKey={mapsKey} routePlans={routePlans} />
 
         <div className="grid gap-5">
-          <div className="grid gap-4 md:grid-cols-4">
-            <div className="rounded-lg border border-black/10 bg-white p-4">
-              <p className="text-sm font-semibold text-[#647069]">Route distance</p>
-              <p className="mt-2 text-3xl font-semibold">{routeDistanceMiles.toFixed(1)} mi</p>
-              <p className="mt-1 text-sm text-[#647069]">Bicycling estimate</p>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="rounded-lg border border-black/10 bg-white p-3 sm:p-4">
+              <p className="text-xs font-semibold text-[#647069] sm:text-sm">Route distance</p>
+              <p className="mt-1 text-2xl font-semibold sm:text-3xl">{routeDistanceMiles.toFixed(1)} mi</p>
+              <p className="mt-1 text-xs text-[#647069] sm:text-sm">Bicycling estimate</p>
             </div>
-            <div className="rounded-lg border border-black/10 bg-white p-4">
-              <p className="text-sm font-semibold text-[#647069]">Ride time</p>
-              <p className="mt-2 text-3xl font-semibold">{routeMinutes}</p>
-              <p className="mt-1 text-sm text-[#647069]">minutes on RadCity 3</p>
+            <div className="rounded-lg border border-black/10 bg-white p-3 sm:p-4">
+              <p className="text-xs font-semibold text-[#647069] sm:text-sm">Ride time</p>
+              <p className="mt-1 text-2xl font-semibold sm:text-3xl">{routeMinutes}</p>
+              <p className="mt-1 text-xs text-[#647069] sm:text-sm">minutes on RadCity 3</p>
             </div>
-            <div className="rounded-lg border border-black/10 bg-white p-4">
-              <p className="text-sm font-semibold text-[#647069]">Lowest temp</p>
-              <p className="mt-2 text-3xl font-semibold">
+            <div className="rounded-lg border border-black/10 bg-white p-3 sm:p-4">
+              <p className="text-xs font-semibold text-[#647069] sm:text-sm">Lowest temp</p>
+              <p className="mt-1 text-2xl font-semibold sm:text-3xl">
                 {typeof stats.lowTemp === "number" ? `${Math.round(stats.lowTemp)} F` : "--"}
               </p>
-              <p className="mt-1 text-sm text-[#647069]">Across commute windows</p>
+              <p className="mt-1 text-xs text-[#647069] sm:text-sm">Commute windows</p>
             </div>
-            <div className="rounded-lg border border-black/10 bg-white p-4">
-              <p className="text-sm font-semibold text-[#647069]">Rain chance</p>
-              <p className="mt-2 text-3xl font-semibold">
+            <div className="rounded-lg border border-black/10 bg-white p-3 sm:p-4">
+              <p className="text-xs font-semibold text-[#647069] sm:text-sm">Rain chance</p>
+              <p className="mt-1 text-2xl font-semibold sm:text-3xl">
                 {typeof stats.maxPop === "number" ? `${Math.round(stats.maxPop)}%` : "--"}
               </p>
-              <p className="mt-1 text-sm text-[#647069]">Peak forecast risk</p>
+              <p className="mt-1 text-xs text-[#647069] sm:text-sm">Peak forecast risk</p>
             </div>
           </div>
 
